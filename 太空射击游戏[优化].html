@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>SpaceShootGame</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #111318;
+    color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 500;
+    margin: 4px 0 12px;
+  }
+  .hud {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    max-width: 480px;
+    font-size: 14px;
+    color: #aaa;
+    margin-bottom: 8px;
+  }
+  .hud b { color: #fff; font-weight: 500; }
+  .stage {
+    position: relative;
+    width: 100%;
+    max-width: 480px;
+  }
+  canvas {
+    width: 100%;
+    height: auto;
+    background: #1a1d24;
+    border-radius: 12px;
+    border: 1px solid #2a2e38;
+    display: block;
+    touch-action: none;
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgba(0,0,0,0.55);
+    border-radius: 12px;
+    text-align: center;
+    padding: 20px;
+  }
+  .overlay p { margin: 0; font-size: 15px; color: #ddd; line-height: 1.6; }
+  button {
+    background: #2a2e38;
+    color: #fff;
+    border: 1px solid #3a3f4c;
+    border-radius: 8px;
+    padding: 10px 22px;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  button:hover { background: #363b47; }
+  button:active { transform: scale(0.97); }
+  .controls {
+    display: flex;
+    gap: 16px;
+    width: 100%;
+    max-width: 480px;
+    justify-content: center;
+    margin-top: 14px;
+  }
+  .controls button {
+    width: 70px;
+    height: 48px;
+    font-size: 18px;
+  }
+  #fireBtn { width: 110px; }
+  .hint {
+    font-size: 12px;
+    color: #777;
+    margin-top: 14px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <h1>太空射击</h1>
+  <div class="hud">
+    <span>得分: <b id="score">0</b></span>
+    <span>生命: <b id="lives">3</b></span>
+    <span>波数: <b id="wave">1</b></span>
+  </div>
+  <div class="stage">
+    <canvas id="game" width="480" height="600"></canvas>
+    <div class="overlay" id="overlay">
+      <p>方向键 / A D 移动，空格键射击<br>手机端用下方按钮操作</p>
+      <button id="startBtn">开始游戏</button>
+    </div>
+  </div>
+  <div class="controls">
+    <button id="leftBtn">◀</button>
+    <button id="fireBtn">射击</button>
+    <button id="rightBtn">▶</button>
+  </div>
+  <p class="hint">击败所有敌人进入下一波，难度会逐渐提高</p>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const scoreEl = document.getElementById('score');
+  const livesEl = document.getElementById('lives');
+  const waveEl = document.getElementById('wave');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+
+  const TAU = Math.PI * 2;
+  let keys = {};
+  let player, bullets, enemyBullets, enemies, particles, stars;
+  let score, lives, wave, running, enemyDir, elapsed;
+  let lastShotAt = -999, enemyShotAccum = 0;
+  let shakeTime = 0, shakeMag = 0;
+
+  // 指数平滑：让数值以与帧率无关的速度逼近目标值，运动更顺滑
+  function smoothTo(current, target, dt, rate){
+    return current + (target - current) * (1 - Math.exp(-rate * dt));
+  }
+
+  function resetGame(){
+    player = {
+      x: W/2 - 18, y: H - 54, w: 36, h: 26,
+      vx: 0, tilt: 0, speed: 300, accel: 16
+    };
+    bullets = [];
+    enemyBullets = [];
+    particles = [];
+    score = 0;
+    lives = 3;
+    wave = 1;
+    enemyDir = 1;
+    elapsed = 0;
+    enemyShotAccum = 0;
+    shakeTime = 0;
+    enemies = makeWave(wave);
+    stars = makeStars(70);
+    updateHud();
+  }
+
+  function makeStars(n){
+    const arr = [];
+    for(let i=0;i<n;i++){
+      arr.push({
+        x: Math.random()*W,
+        y: Math.random()*H,
+        r: Math.random()*1.6 + 0.4,
+        speed: 20 + Math.random()*50,
+        phase: Math.random()*TAU
+      });
+    }
+    return arr;
+  }
+
+  function makeWave(w){
+    const rows = Math.min(3 + Math.floor(w/2), 6);
+    const cols = 7;
+    const arr = [];
+    const startY = 40;
+    let idx = 0;
+    for(let r=0;r<rows;r++){
+      for(let c=0;c<cols;c++){
+        arr.push({
+          baseX: 30 + c*58,
+          baseY: startY + r*44,
+          x: 30 + c*58,
+          y: startY + r*44,
+          w: 32, h: 24,
+          alive: true,
+          hp: 1 + (r===0 && w>3 ? 1:0),
+          phase: idx * 0.35,
+          hitFlash: 0
+        });
+        idx++;
+      }
+    }
+    return arr;
+  }
+
+  function updateHud(){
+    scoreEl.textContent = score;
+    livesEl.textContent = lives;
+    waveEl.textContent = wave;
+  }
+
+  function rectsOverlap(a,b){
+    return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+  }
+
+  function spawnParticles(x,y,color,count){
+    count = count || 10;
+    for(let i=0;i<count;i++){
+      // 用三角函数把粒子均匀撒开成圆形爆裂，再加一点随机抖动更自然
+      const angle = (i/count)*TAU + (Math.random()-0.5)*0.6;
+      const speed = 60 + Math.random()*140;
+      particles.push({
+        x, y,
+        vx: Math.cos(angle)*speed,
+        vy: Math.sin(angle)*speed,
+        life: 0.45 + Math.random()*0.25,
+        age: 0,
+        color
+      });
+    }
+  }
+
+  function triggerShake(mag, time){
+    shakeMag = Math.max(shakeMag, mag);
+    shakeTime = Math.max(shakeTime, time);
+  }
+
+  function update(dt){
+    if(!running) return;
+    elapsed += dt;
+
+    // --- 玩家移动：目标速度 + 指数平滑，带来加速/减速的惯性手感 ---
+    let targetVx = 0;
+    if(keys['ArrowLeft']||keys['a']) targetVx -= player.speed;
+    if(keys['ArrowRight']||keys['d']) targetVx += player.speed;
+    player.vx = smoothTo(player.vx, targetVx, dt, player.accel);
+    player.x += player.vx * dt;
+    player.x = Math.max(4, Math.min(W - player.w - 4, player.x));
+
+    // 根据速度让飞船轻微侧倾，模拟转向惯性
+    const targetTilt = Math.max(-1, Math.min(1, player.vx / player.speed)) * 0.28;
+    player.tilt = smoothTo(player.tilt, targetTilt, dt, 10);
+
+    if((keys[' ']||keys['fire']) && elapsed - lastShotAt > 0.16){
+      bullets.push({x: player.x + player.w/2 - 2, y: player.y - 4, w:4, h:14, speed:620});
+      lastShotAt = elapsed;
+      triggerShake(1.2, 0.06);
+    }
+
+    bullets.forEach(b => b.y -= b.speed*dt);
+    bullets = bullets.filter(b => b.y > -20);
+
+    // --- 敌人编队：整体左右平移 + 每个个体自身的正弦波浮动，layered 更有生命力 ---
+    let edge = false;
+    let minX = Infinity, maxX = -Infinity;
+    enemies.forEach(e=>{
+      if(!e.alive) return;
+      if(e.baseX < minX) minX = e.baseX;
+      if(e.baseX+e.w > maxX) maxX = e.baseX+e.w;
+    });
+    const marchSpeed = (36 + wave*9);
+    if(minX + enemyDir*marchSpeed*dt < 8 || maxX + enemyDir*marchSpeed*dt > W-8) edge = true;
+
+    enemies.forEach(e=>{
+      if(!e.alive) return;
+      e.baseX += enemyDir*marchSpeed*dt;
+      if(edge) e.baseY += 14;
+      // 呼吸式浮动：用 sin/cos 叠加出轻微的摆动轨迹
+      e.x = e.baseX + Math.sin(elapsed*2.4 + e.phase) * 3;
+      e.y = e.baseY + Math.cos(elapsed*1.8 + e.phase) * 2.5;
+      if(e.hitFlash > 0) e.hitFlash = Math.max(0, e.hitFlash - dt*6);
+    });
+    if(edge) enemyDir *= -1;
+
+    const fireInterval = Math.max(0.35, 1.0 - wave*0.05);
+    enemyShotAccum += dt;
+    if(enemyShotAccum > fireInterval){
+      enemyShotAccum = 0;
+      const alive = enemies.filter(e=>e.alive);
+      if(alive.length){
+        const shooter = alive[Math.floor(Math.random()*alive.length)];
+        enemyBullets.push({x: shooter.x+shooter.w/2-2, y: shooter.y+shooter.h, w:4, h:14, speed:270});
+      }
+    }
+    enemyBullets.forEach(b => b.y += b.speed*dt);
+    enemyBullets = enemyBullets.filter(b => b.y < H+20);
+
+    bullets.forEach(b=>{
+      enemies.forEach(e=>{
+        if(e.alive && rectsOverlap(b, {x:e.x,y:e.y,w:e.w,h:e.h})){
+          e.hp -= 1;
+          e.hitFlash = 1;
+          b.y = -999;
+          if(e.hp <= 0){
+            e.alive = false;
+            score += 10;
+            spawnParticles(e.x+e.w/2, e.y+e.h/2, '#e07a45', 12);
+          } else {
+            spawnParticles(e.x+e.w/2, e.y+e.h/2, '#ffd27a', 4);
+          }
+        }
+      });
+    });
+    bullets = bullets.filter(b => b.y > -20);
+
+    enemyBullets.forEach(b=>{
+      if(rectsOverlap(b, player)){
+        b.y = H+999;
+        lives -= 1;
+        spawnParticles(player.x+player.w/2, player.y+player.h/2, '#4a90d9', 14);
+        triggerShake(8, 0.25);
+        if(lives <= 0){
+          endGame();
+        }
+      }
+    });
+    enemyBullets = enemyBullets.filter(b => b.y < H+20);
+
+    enemies.forEach(e=>{
+      if(e.alive && e.y + e.h > player.y) endGame();
+    });
+
+    particles.forEach(p=>{
+      p.age += dt;
+      p.x += p.vx*dt;
+      p.y += p.vy*dt;
+      p.vx *= (1 - Math.min(dt*2.2, 1)); // 阻尼衰减，飞散更自然
+      p.vy *= (1 - Math.min(dt*2.2, 1));
+    });
+    particles = particles.filter(p => p.age < p.life);
+
+    stars.forEach(s=>{
+      s.y += s.speed*dt;
+      if(s.y > H){ s.y = -4; s.x = Math.random()*W; }
+    });
+
+    if(shakeTime > 0){
+      shakeTime = Math.max(0, shakeTime - dt);
+      if(shakeTime <= 0) shakeMag = 0;
+    }
+
+    if(enemies.every(e=>!e.alive)){
+      wave += 1;
+      enemies = makeWave(wave);
+      enemyDir = 1;
+    }
+
+    updateHud();
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+
+    ctx.save();
+    if(shakeTime > 0){
+      const decay = shakeTime; // 剩余时间越多震动越强，随时间自然衰减
+      const dx = Math.sin(elapsed*60) * shakeMag * decay;
+      const dy = Math.cos(elapsed*53) * shakeMag * decay * 0.6;
+      ctx.translate(dx, dy);
+    }
+
+    // 星空背景，略带闪烁
+    stars.forEach(s=>{
+      const tw = 0.6 + Math.sin(elapsed*3 + s.phase)*0.4;
+      ctx.globalAlpha = Math.max(0.15, tw);
+      ctx.fillStyle = '#8fa3c7';
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, TAU);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    // 玩家飞船，带侧倾旋转
+    ctx.save();
+    ctx.translate(player.x + player.w/2, player.y + player.h/2);
+    ctx.rotate(player.tilt);
+    ctx.fillStyle = '#4a90d9';
+    ctx.beginPath();
+    ctx.moveTo(0, -player.h/2);
+    ctx.lineTo(-player.w/2, player.h/2);
+    ctx.lineTo(player.w/2, player.h/2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath();
+    ctx.arc(0, 2, 4, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.fillStyle = '#7d6fe0';
+    ctx.shadowColor = '#7d6fe0';
+    ctx.shadowBlur = 6;
+    bullets.forEach(b=> ctx.fillRect(b.x,b.y,b.w,b.h));
+    ctx.shadowBlur = 0;
+
+    enemies.forEach(e=>{
+      if(!e.alive) return;
+      const flash = e.hitFlash;
+      const base = e.hp > 1 ? [156,63,31] : [224,122,69];
+      const r = Math.round(base[0] + (255-base[0])*flash);
+      const g = Math.round(base[1] + (255-base[1])*flash);
+      const b = Math.round(base[2] + (255-base[2])*flash);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(e.x, e.y, e.w, e.h);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fillRect(e.x+6, e.y+6, e.w-12, 4);
+    });
+
+    ctx.fillStyle = '#d94f4f';
+    ctx.shadowColor = '#d94f4f';
+    ctx.shadowBlur = 6;
+    enemyBullets.forEach(b=> ctx.fillRect(b.x,b.y,b.w,b.h));
+    ctx.shadowBlur = 0;
+
+    particles.forEach(p=>{
+      const t = p.age / p.life;
+      ctx.globalAlpha = Math.max(0, 1 - t);
+      ctx.fillStyle = p.color;
+      const size = 4 * (1 - t*0.5);
+      ctx.fillRect(p.x-size/2, p.y-size/2, size, size);
+    });
+    ctx.globalAlpha = 1;
+
+    ctx.restore();
+  }
+
+  let lastTs = null;
+  let loopId;
+  function loop(ts){
+    if(lastTs === null) lastTs = ts;
+    const dt = Math.min((ts - lastTs) / 1000, 0.05); // 限制最大步长，避免切后台后瞬移
+    lastTs = ts;
+    update(dt);
+    draw();
+    if(running) loopId = requestAnimationFrame(loop);
+  }
+
+  function endGame(){
+    running = false;
+    cancelAnimationFrame(loopId);
+    overlay.style.display = 'flex';
+    overlay.innerHTML = '';
+    const msg = document.createElement('p');
+    msg.style.fontSize = '18px';
+    msg.style.fontWeight = '500';
+    msg.style.color = '#fff';
+    msg.textContent = '游戏结束 得分 ' + score;
+    const btn = document.createElement('button');
+    btn.textContent = '再来一局';
+    btn.onclick = start;
+    overlay.appendChild(msg);
+    overlay.appendChild(btn);
+  }
+
+  function start(){
+    resetGame();
+    running = true;
+    overlay.style.display = 'none';
+    cancelAnimationFrame(loopId);
+    lastTs = null;
+    loopId = requestAnimationFrame(loop);
+  }
+
+  startBtn.addEventListener('click', start);
+
+  window.addEventListener('keydown', e => {
+    keys[e.key] = true;
+    if(e.key === ' ') e.preventDefault();
+  });
+  window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+  const leftBtn = document.getElementById('leftBtn');
+  const rightBtn = document.getElementById('rightBtn');
+  const fireBtn = document.getElementById('fireBtn');
+  function bindHold(el, key){
+    const on = ev => { ev.preventDefault(); keys[key] = true; };
+    const off = ev => { ev.preventDefault(); keys[key] = false; };
+    el.addEventListener('touchstart', on);
+    el.addEventListener('touchend', off);
+    el.addEventListener('mousedown', on);
+    el.addEventListener('mouseup', off);
+    el.addEventListener('mouseleave', off);
+  }
+  bindHold(leftBtn, 'ArrowLeft');
+  bindHold(rightBtn, 'ArrowRight');
+  bindHold(fireBtn, 'fire');
+
+  resetGame();
+  draw();
+})();
+</script>
+</body>
+</html>
